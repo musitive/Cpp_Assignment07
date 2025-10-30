@@ -12,56 +12,137 @@
 // --------------- MODIFY
 
 struct ThreadPool {
-	ThreadPool(std::size_t numThreads) {
-		// TODO
+	ThreadPool(std::size_t numThreads) : stopFlag(false) {
+        threads = std::vector<std::jthread>(numThreads);
+        tasks = std::queue<std::function<void()>>();
+	
+        for(std::size_t t = 0; t < numThreads; ++t)
+        {
+            threads.emplace_back([this]() {
+                workerThread();
+            });
+        }
 	}
+
 	~ThreadPool() {
-		// TODO
+		stopFlag = true;
+        for (int i = 0; i < threads.size(); ++i) {
+            threads[i].join();
+        }
 	}
-	template <typename F, typename... Args> auto enqueue(F&& f, Args&&... args) -> std::future<std::invoke_result_t<F, Args...>> {
-		// TODO
+
+	template <typename F, typename... Args>
+    auto enqueue(F&& f, Args&&... args) -> std::future<std::invoke_result_t<F, Args...>> {
+        auto task = std::make_shared<std::packaged_task<std::invoke_result_t<F, Args...>()>>(
+            std::bind(std::forward<F>(f), std::forward<Args>(args)...)
+        );
+
+        {
+            std::lock_guard lock(this->queueMutex);
+            if(this->stopFlag) {
+                throw std::runtime_error("enqueue on stopped ThreadPool");
+            }
+            this->tasks.emplace([task]() { (*task)(); });
+        }
+
+        this->condition.notify_one();
+        return task->get_future();
 	}
+    
 	protected:
 		// May be modified if you decide to use std::stop_token for your threads
         void workerThread() {
-			// TODO
+			while(true) {
+                std::function<void()> task;
+                
+                {
+                    // Acquires mutex
+                    std::unique_lock lock(this->queueMutex);
+
+                    // Checks condition while holding the lock, if condition is not satisfied, releases lock and waits
+                    condition.wait(lock, [this]() {
+                        return stopFlag || !tasks.empty();
+                    });
+
+                    // Locks gets reacquired each time condition perform its check after a notify
+                    if (stopFlag && tasks.empty()) {
+                        return;
+                    }
+
+                    task = std::move(tasks.front());
+                    tasks.pop();
+                }
+
+                task();		// Executes task!
+            }
 		}
+
+    private:
+        std::queue<std::function<void()>> tasks;
+        std::vector<std::jthread> threads;
+        bool stopFlag;
+        std::condition_variable condition;
+        std::mutex queueMutex;
 };
 
 // --------------- END OF MODIFY
 
 bool is_prime(std::size_t n) {
-	if((n % 2 == 0) && (n != 2)) { return false; }
+	if((n % 2 == 0) && (n != 2)) { 
+        return false;
+    }
+
 	std::size_t upper = sqrt(static_cast<double>(n));
-	for(std::size_t i = 3; i <= upper; i += 2) {
-		if((n % i) == 0){ return false; }
+
+	for (std::size_t i = 3; i <= upper; i += 2) {
+		if((n % i) == 0) {
+            return false;
+        }
 	}
+
 	return true;
 }
 
 int main() {
-	std::size_t primeCountSingle = 0, primeCountPool = 0;
+	std::size_t primeCountSingle = 0, primeCountPool = 0, threadCount = 14;
     auto start = std::chrono::high_resolution_clock::now();
+
     for(std::size_t i = PRIME_START; i < PRIME_END; ++i) {
-		if (is_prime(i)) { ++primeCountSingle; }
+		if (is_prime(i)) {
+            ++primeCountSingle;
+        }
 	}
+
     auto end = std::chrono::high_resolution_clock::now();
     std::cout << "Found primes in single thread: " << primeCountSingle << "\nTime taken in single thread: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << std::endl;
-	{
+	
+    {
 		start = std::chrono::high_resolution_clock::now();
-	    // TODO: Adds tasks to queue such that it scans all numbers in the range [PRIME_START, PRIME_END[ using your ThreadPool implementation
+	    // TODO: Adds tasks to queue such that it scans all numbers in the range [PRIME_START, PRIME_END] using your ThreadPool implementation
 	    // Count the total number of prime numbers present in the range, it should match the single threaded execution
-	    // NOTE: You may either use a referene to primeCountPool or may receive the std::futures of your calls to handle the count sequentially
+	    // NOTE: You may either use a reference to primeCountPool or may receive the std::futures of your calls to handle the count sequentially
 	    // If you decide to use reference, remember the risk of race conditions between threads
-	    ThreadPool tp(4);
-	    
-	    
+	    ThreadPool tp(threadCount);
+	    std::vector<std::future<bool>> results;
+        results.reserve(PRIME_END - PRIME_START);
+
+        for(std::size_t i = PRIME_START; i < PRIME_END; ++i) {
+            results.emplace_back(tp.enqueue(is_prime, i));
+        }
+
+	    for(auto& future : results) {
+            if (future.get()) {
+                ++primeCountPool;
+            }
+        }
 	    
 	    end = std::chrono::high_resolution_clock::now();
 	    std::cout << "Found primes using thread pool: " << primeCountPool << "\nTime taken in thread pool: " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << std::endl;
 	}
+
 	std::cout << "Destroyed thread pool successfully" << std::endl;
     std::cout << "Press ENTER to exit...";
     fgetc(stdin);
+
     return 0;
 }
