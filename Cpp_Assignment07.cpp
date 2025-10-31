@@ -9,15 +9,37 @@
 #define PRIME_START 100*1000*1000
 #define PRIME_END 200*1000*1000
 
-// --------------- MODIFY
+/**
+ * a. What was the most difficult aspect to grasp regarding the topic of threaded pools?
+ *      During lecture, the difficult part for me to understand was the future. Reading through the documentation
+ *      and giving it an attempt, that part of the project actually ended up fairly easy.
+ * 
+ *      During the lab implementation, I think the hardest part of the lab was the multi-threading. I'm trying
+ *      wrapping my head around multi-threading, and more crucially the syntax and best practices. In the destructor,
+ *      I forgot to call the notify_all to the other threads and I also forgot to wrap mutex in a separate closure.
+ * 
+ * b. What improvements to the design of the ThreadedPool would you consider if you were implementing one for your game?
+ *      The first improvement would be to make sure that the tasks being given to the ThreadedPool were tasks
+ *      worth multithreading. It was unfortunate that the enqueue function was actually slower than the is_prime function.
+ * 
+ *      Another idea I had was that you could implement some sort of priority queue. So instead of first-in, first-out,
+ *      tasks would be removed by order of importance.
+ * 
+ * Time taken in single thread: 20217
+ * Found primes using thread pool: 5317482
+ * Time taken in thread pool: 181308
+ * Destroyed thread pool successfully
+ * Press ENTER to exit...
+ * 
+ */
+
 
 struct ThreadPool {
 	ThreadPool(std::size_t numThreads) : stopFlag(false) {
-        threads = std::vector<std::jthread>(numThreads);
+        threads.reserve(numThreads);
         tasks = std::queue<std::function<void()>>();
 	
-        for(std::size_t t = 0; t < numThreads; ++t)
-        {
+        for(std::size_t t = 0; t < numThreads; ++t) {
             threads.emplace_back([this]() {
                 workerThread();
             });
@@ -25,7 +47,13 @@ struct ThreadPool {
 	}
 
 	~ThreadPool() {
-		stopFlag = true;
+        {
+            std::unique_lock<std::mutex> lock(queueMutex);
+            stopFlag = true;
+        }
+
+        condition.notify_all();
+
         for (int i = 0; i < threads.size(); ++i) {
             threads[i].join();
         }
@@ -42,7 +70,10 @@ struct ThreadPool {
             if(this->stopFlag) {
                 throw std::runtime_error("enqueue on stopped ThreadPool");
             }
-            this->tasks.emplace([task]() { (*task)(); });
+
+            this->tasks.emplace([task]() {
+                (*task)();
+            });
         }
 
         this->condition.notify_one();
@@ -85,17 +116,15 @@ struct ThreadPool {
         std::mutex queueMutex;
 };
 
-// --------------- END OF MODIFY
-
 bool is_prime(std::size_t n) {
-	if((n % 2 == 0) && (n != 2)) { 
+	if ((n % 2 == 0) && (n != 2)) { 
         return false;
     }
 
 	std::size_t upper = sqrt(static_cast<double>(n));
 
 	for (std::size_t i = 3; i <= upper; i += 2) {
-		if((n % i) == 0) {
+		if ((n % i) == 0) {
             return false;
         }
 	}
@@ -104,7 +133,7 @@ bool is_prime(std::size_t n) {
 }
 
 int main() {
-	std::size_t primeCountSingle = 0, primeCountPool = 0, threadCount = 14;
+	std::size_t primeCountSingle = 0, primeCountPool = 0, threadCount = 4;
     auto start = std::chrono::high_resolution_clock::now();
 
     for(std::size_t i = PRIME_START; i < PRIME_END; ++i) {
